@@ -1,0 +1,168 @@
+name: OsTIrus 1.4.2 Windows 7 x64
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-win7:
+    name: OsTIrus VST2+VST3 (MSVC v143)
+    runs-on: windows-2022
+    timeout-minutes: 180
+    steps:
+      - name: Checkout overlay
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Overlay and PE-auditor checks
+        run: |
+          python scripts/check_categories_fixes.py overlay
+          python scripts/pe_win7_audit.py --self-test
+
+      - name: Checkout gearmulator 1.4.2
+        uses: actions/checkout@v4
+        with:
+          repository: dsp56300/gearmulator
+          ref: 1.4.2
+          submodules: recursive
+          path: gearmulator
+          fetch-depth: 1
+
+      - name: Apply overlay patches
+        shell: bash
+        run: |
+          python scripts/check_categories_fixes.py overlay
+          cp -a overlay/. gearmulator/
+          python scripts/check_categories_fixes.py gearmulator
+
+      - name: Set up MSVC v143
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+          vsversion: "2022"
+
+      - name: Configure CMake
+        working-directory: gearmulator
+        run: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -T v143 `
+            -Dgearmulator_SYNTH_OSTIRUS=ON `
+            -Dgearmulator_SYNTH_OSIRUS=OFF `
+            -Dgearmulator_SYNTH_VAVRA=OFF `
+            -Dgearmulator_SYNTH_XENIA=OFF `
+            -Dgearmulator_SYNTH_NODALRED2X=OFF `
+            -Dgearmulator_BUILD_VIRUS_CONSOLE=OFF `
+            -Dgearmulator_BUILD_JUCEPLUGIN=ON `
+            -Dgearmulator_BUILD_JUCEPLUGIN_VST2=ON `
+            -Dgearmulator_BUILD_JUCEPLUGIN_VST3=ON `
+            -Dgearmulator_BUILD_JUCEPLUGIN_CLAP=OFF `
+            -Dgearmulator_BUILD_JUCEPLUGIN_LV2=OFF `
+            -Dgearmulator_BUILD_JUCEPLUGIN_AU=OFF `
+            -Dgearmulator_BUILD_FX_PLUGIN=OFF
+
+      - name: List OsTIrus targets
+        working-directory: gearmulator
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path build -Recurse -Filter "*osTIrus*" |
+            ForEach-Object { $_.FullName }
+
+      - name: Build OsTIrus VST3
+        working-directory: gearmulator
+        shell: cmd
+        run: |
+          cmake --build build --config Release --parallel 2 --target osTIrusJucePlugin_VST3 > build-vst3.log 2>&1
+          set BUILD_EXIT=%ERRORLEVEL%
+          type build-vst3.log
+          if %BUILD_EXIT% NEQ 0 (
+            echo ===== compiler/linker errors =====
+            findstr /i /c:"error C" /c:"fatal error" /c:"LNK" /c:"MSB" /c:"out of heap" build-vst3.log
+          )
+          exit /b %BUILD_EXIT%
+
+      - name: Build OsTIrus VST2
+        working-directory: gearmulator
+        shell: cmd
+        run: |
+          cmake --build build --config Release --parallel 2 --target osTIrusJucePlugin_VST > build-vst2.log 2>&1
+          set BUILD_EXIT=%ERRORLEVEL%
+          type build-vst2.log
+          if %BUILD_EXIT% NEQ 0 (
+            echo ===== compiler/linker errors =====
+            findstr /i /c:"error C" /c:"fatal error" /c:"LNK" /c:"MSB" /c:"out of heap" build-vst2.log
+          )
+          exit /b %BUILD_EXIT%
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            gearmulator/build-vst3.log
+            gearmulator/build-vst2.log
+          if-no-files-found: ignore
+
+      - name: Stage plugins
+        id: stage
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:GITHUB_WORKSPACE "dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          $dll = Get-ChildItem -Path "gearmulator" -Recurse -Filter "OsTIrus.dll" |
+            Where-Object { $_.FullName -match "Release|VST" -and $_.Length -gt 1MB } |
+            Select-Object -First 1
+          if (-not $dll) {
+            $dll = Get-ChildItem -Path "gearmulator" -Recurse -Filter "OsTIrus.dll" |
+              Where-Object { $_.Length -gt 1MB } |
+              Select-Object -First 1
+          }
+          if (-not $dll) { throw "OsTIrus.dll (VST2) not found" }
+          Copy-Item $dll.FullName (Join-Path $dist "OsTIrus.dll")
+          Write-Host "VST2: $($dll.FullName)"
+
+          $vst3 = Get-ChildItem -Path "gearmulator" -Recurse -Directory -Filter "OsTIrus.vst3" |
+            Select-Object -First 1
+          if ($vst3) {
+            Copy-Item $vst3.FullName (Join-Path $dist "OsTIrus.vst3") -Recurse -Force
+            Write-Host "VST3 bundle: $($vst3.FullName)"
+          } else {
+            $vst3file = Get-ChildItem -Path "gearmulator" -Recurse -Filter "OsTIrus.vst3" |
+              Where-Object { -not $_.PSIsContainer -and $_.Length -gt 1MB } |
+              Select-Object -First 1
+            if (-not $vst3file) { throw "OsTIrus.vst3 not found" }
+            Copy-Item $vst3file.FullName (Join-Path $dist "OsTIrus.vst3")
+            Write-Host "VST3 file: $($vst3file.FullName)"
+          }
+          Get-ChildItem -Path $dist -Recurse | ForEach-Object { Write-Host $_.FullName }
+
+      - name: PE audit (Win7)
+        shell: bash
+        run: python scripts/pe_win7_audit.py dist
+
+      - name: Zip for Live 10
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:GITHUB_WORKSPACE "OsTIrus-1.4.2-win7-x64-VST2-VST3.zip"
+          if (Test-Path $zip) { Remove-Item $zip }
+          Push-Location dist
+          tar -a -c -f $zip OsTIrus.dll OsTIrus.vst3
+          Pop-Location
+          Get-Item $zip | Format-List Name, Length
+
+      - name: Upload plugins
+        uses: actions/upload-artifact@v4
+        with:
+          name: OsTIrus-1.4.2-win7-x64-VST2-VST3
+          path: |
+            dist/OsTIrus.dll
+            dist/OsTIrus.vst3
+            OsTIrus-1.4.2-win7-x64-VST2-VST3.zip
+          if-no-files-found: error
