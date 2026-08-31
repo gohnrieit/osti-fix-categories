@@ -76,11 +76,39 @@ jobs:
 
       - name: Build OsTIrus VST3
         working-directory: gearmulator
-        run: cmake --build build --config Release --parallel --target osTIrusJucePlugin_VST3
+        shell: cmd
+        run: |
+          cmake --build build --config Release --parallel 2 --target osTIrusJucePlugin_VST3 > build-vst3.log 2>&1
+          set BUILD_EXIT=%ERRORLEVEL%
+          type build-vst3.log
+          if %BUILD_EXIT% NEQ 0 (
+            echo ===== compiler/linker errors =====
+            findstr /i /c:"error C" /c:"fatal error" /c:"LNK" /c:"MSB" /c:"out of heap" build-vst3.log
+          )
+          exit /b %BUILD_EXIT%
 
       - name: Build OsTIrus VST2
         working-directory: gearmulator
-        run: cmake --build build --config Release --parallel --target osTIrusJucePlugin_VST
+        shell: cmd
+        run: |
+          cmake --build build --config Release --parallel 2 --target osTIrusJucePlugin_VST > build-vst2.log 2>&1
+          set BUILD_EXIT=%ERRORLEVEL%
+          type build-vst2.log
+          if %BUILD_EXIT% NEQ 0 (
+            echo ===== compiler/linker errors =====
+            findstr /i /c:"error C" /c:"fatal error" /c:"LNK" /c:"MSB" /c:"out of heap" build-vst2.log
+          )
+          exit /b %BUILD_EXIT%
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            gearmulator/build-vst3.log
+            gearmulator/build-vst2.log
+          if-no-files-found: ignore
 
       - name: Stage plugins
         id: stage
@@ -138,3 +166,4 @@ jobs:
             dist/OsTIrus.vst3
             OsTIrus-1.4.2-win7-x64-VST2-VST3.zip
           if-no-files-found: error
+
