@@ -67,9 +67,20 @@ jobs:
             -Dgearmulator_BUILD_JUCEPLUGIN_AU=OFF `
             -Dgearmulator_BUILD_FX_PLUGIN=OFF
 
-      - name: Build OsTIrus VST2 and VST3
+      - name: List OsTIrus targets
         working-directory: gearmulator
-        run: cmake --build build --config Release --parallel --target osTIrusJucePlugin_VST osTIrusJucePlugin_VST3
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path build -Recurse -Filter "*osTIrus*" |
+            ForEach-Object { $_.FullName }
+
+      - name: Build OsTIrus VST3
+        working-directory: gearmulator
+        run: cmake --build build --config Release --parallel --target osTIrusJucePlugin_VST3
+
+      - name: Build OsTIrus VST2
+        working-directory: gearmulator
+        run: cmake --build build --config Release --parallel --target osTIrusJucePlugin_VST
 
       - name: Stage plugins
         id: stage
